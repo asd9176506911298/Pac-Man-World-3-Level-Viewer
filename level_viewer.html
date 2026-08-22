@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Pac-Man World 3 - Level Viewer</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; overflow:hidden; background:#1a1a1a; font-family:sans-serif; }
+  #ui { position:absolute; top:10px; left:10px; z-index:10; color:#eee; background:rgba(0,0,0,0.65); padding:12px 14px; border-radius:8px; max-width:380px; max-height:90vh; overflow-y:auto; }
+  #ui label { display:block; margin-top:10px; font-size:13px; color:#ccc; }
+  #ui input[type=file] { color:#eee; width:100%; margin-top:4px; }
+  #legend { margin-top:8px; font-size:12px; max-height:220px; overflow:auto; }
+  .legend-item { display:flex; align-items:center; gap:6px; margin:2px 0; cursor:pointer; }
+  .swatch { width:12px; height:12px; flex:0 0 auto; border:1px solid #555; }
+  #info { position:absolute; bottom:10px; left:10px; z-index:10; color:#eee; background:rgba(0,0,0,0.65); padding:8px 12px; border-radius:8px; font-size:12px; max-width:400px; white-space:pre-wrap; }
+  #status { font-size:12px; color:#8f8; margin-top:6px; white-space:pre-wrap; }
+  .row { display:flex; align-items:center; gap:6px; margin-top:6px; }
+  h3 { margin:0 0 6px 0; font-size:15px; }
+  a { color:#8cf; }
+</style>
+</head>
+<body>
+<div id="ui">
+  <h3>Pac-Man World 3 Level Viewer</h3>
+  <label>Map:</label>
+  <select id="mapSelect"><option>Loading manifest...</option></select>
+  <div id="status"></div>
+
+  <div class="row">
+    <label style="margin:0;"><input type="checkbox" id="toggleModel" checked> Show collision mesh</label>
+    <label style="margin:0;">Opacity</label>
+    <input type="range" id="opacitySlider" min="0.1" max="1" step="0.05" value="0.9" style="flex:1;">
+  </div>
+  <div class="row">
+    <label style="margin:0;"><input type="checkbox" id="toggleBoxes" checked> Show entity/trigger boxes</label>
+  </div>
+  <div id="legend"></div>
+
+  <details style="margin-top:12px;">
+    <summary style="cursor:pointer; font-size:12px; color:#aaa;">Load a local file instead</summary>
+    <label>Load a level data package (level_data/*.json):</label>
+    <input type="file" id="jsonInput" accept=".json">
+  </details>
+</div>
+<div id="info">Left-drag = rotate&nbsp;&nbsp;Right-drag = pan&nbsp;&nbsp;Scroll = zoom&nbsp;&nbsp;Click a box for details</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1a1a);
+const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 200000);
+camera.position.set(2000, 2000, 2000);
+
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.target.set(0,0,0);
+
+scene.add(new THREE.GridHelper(20000, 40, 0x444444, 0x2a2a2a));
+scene.add(new THREE.AxesHelper(500));
+scene.add(new THREE.AmbientLight(0xffffff, 0.65));
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+dirLight.position.set(1000, 2000, 1000);
+scene.add(dirLight);
+
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+const infoDiv = document.getElementById('info');
+const statusDiv = document.getElementById('status');
+const legendDiv = document.getElementById('legend');
+
+// ===== collision mesh =====
+const modelGroup = new THREE.Group();
+scene.add(modelGroup);
+const modelMaterial = new THREE.MeshStandardMaterial({
+  color: 0x8899aa, roughness: 0.9, metalness: 0.0,
+  transparent: true, opacity: 0.9, side: THREE.DoubleSide
+});
+
+function buildMeshes(meshes){
+  modelGroup.clear();
+  let totalV = 0, totalF = 0;
+  meshes.forEach(m => {
+    const geo = new THREE.BufferGeometry();
+    const verts = new Float32Array(m.verts.length*3);
+    m.verts.forEach((v,i) => { verts[i*3]=v[0]; verts[i*3+1]=v[1]; verts[i*3+2]=v[2]; });
+    const idx = new Uint32Array(m.faces.length*3);
+    m.faces.forEach((f,i) => { idx[i*3]=f[0]; idx[i*3+1]=f[1]; idx[i*3+2]=f[2]; });
+    geo.setAttribute('position', new THREE.BufferAttribute(verts,3));
+    geo.setIndex(new THREE.BufferAttribute(idx,1));
+    geo.computeVertexNormals();
+    const mesh = new THREE.Mesh(geo, modelMaterial);
+    mesh.name = m.name;
+    modelGroup.add(mesh);
+    totalV += m.verts.length; totalF += m.faces.length;
+  });
+  return {totalV, totalF};
+}
+
+document.getElementById('toggleModel').addEventListener('change', e => { modelGroup.visible = e.target.checked; });
+document.getElementById('opacitySlider').addEventListener('input', e => { modelMaterial.opacity = parseFloat(e.target.value); });
+
+// ===== entity/trigger boxes =====
+const boxGroup = new THREE.Group();
+scene.add(boxGroup);
+let boxMeshes = [];
+const classColors = {};
+const palette = [0xff5555,0x55ff55,0x5599ff,0xffff55,0xff55ff,0x55ffff,0xffaa55,0xaa55ff,0x55ffaa,0xff8888];
+let colorIdx = 0;
+function colorFor(cls){
+  if(!(cls in classColors)){ classColors[cls] = palette[colorIdx % palette.length]; colorIdx++; }
+  return classColors[cls];
+}
+function quatToThree(q){ return new THREE.Quaternion(q[0], q[1], q[2], q[3]); }
+
+function buildBoxes(boxes){
+  boxGroup.clear();
+  boxMeshes = [];
+  colorIdx = 0;
+  for(const k in classColors) delete classColors[k];
+  const visibleClasses = new Set();
+
+  boxes.forEach(b => {
+    const [minx,miny,minz] = b.bbox_min;
+    const [maxx,maxy,maxz] = b.bbox_max;
+    let sx=maxx-minx, sy=maxy-miny, sz=maxz-minz;
+    if (sx<=0) sx=1; if (sy<=0) sy=1; if (sz<=0) sz=1;
+    if (sx>50000 || sy>50000 || sz>50000) return;
+    const cx=(minx+maxx)/2, cy=(miny+maxy)/2, cz=(minz+maxz)/2;
+
+    const geo = new THREE.BoxGeometry(sx, sy, sz);
+    const edges = new THREE.EdgesGeometry(geo);
+    const color = colorFor(b.class);
+    const wire = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({color}));
+
+    const group = new THREE.Group();
+    group.add(wire);
+    group.position.set(b.pos[0], b.pos[1], b.pos[2]);
+    group.quaternion.copy(quatToThree(b.quat));
+    wire.position.set(cx, cy, cz);
+    group.userData = b;
+    boxGroup.add(group);
+    boxMeshes.push(group);
+    visibleClasses.add(b.class);
+  });
+
+  legendDiv.innerHTML = '';
+  [...visibleClasses].sort().forEach(cls => {
+    const div = document.createElement('div');
+    div.className = 'legend-item';
+    const sw = document.createElement('div');
+    sw.className = 'swatch';
+    sw.style.background = '#' + classColors[cls].toString(16).padStart(6,'0');
+    const label = document.createElement('span');
+    label.textContent = `${cls} (${boxes.filter(x=>x.class===cls).length})`;
+    div.appendChild(sw); div.appendChild(label);
+    div.onclick = () => { boxMeshes.forEach(m => { if(m.userData.class===cls) m.visible = !m.visible; }); };
+    legendDiv.appendChild(div);
+  });
+}
+
+document.getElementById('toggleBoxes').addEventListener('change', e => { boxGroup.visible = e.target.checked; });
+
+// ===== load json =====
+function loadMapData(data){
+  const {totalV, totalF} = buildMeshes(data.meshes || []);
+  buildBoxes(data.boxes || []);
+  statusDiv.textContent = `Map: ${data.map}\nCollision mesh: ${(data.meshes||[]).length} sub-meshes (${totalV} verts / ${totalF} faces)\nEntity/trigger boxes: ${(data.boxes||[]).length}`;
+}
+
+function loadMapByName(name){
+  statusDiv.textContent = `Loading ${name}...`;
+  fetch(`level_data/${name}.json`)
+    .then(r => {
+      if(!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    })
+    .then(loadMapData)
+    .catch(err => { statusDiv.textContent = `Failed to load ${name}: ${err.message}`; });
+}
+
+const mapSelect = document.getElementById('mapSelect');
+mapSelect.addEventListener('change', () => loadMapByName(mapSelect.value));
+
+// on page load: fetch manifest.json, populate dropdown, auto-load first map
+fetch('level_data/manifest.json')
+  .then(r => {
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  })
+  .then(maps => {
+    mapSelect.innerHTML = '';
+    maps.forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      mapSelect.appendChild(opt);
+    });
+    if(maps.length > 0) loadMapByName(maps[0]);
+  })
+  .catch(err => {
+    mapSelect.innerHTML = '<option>manifest.json not found</option>';
+    statusDiv.textContent = 'Could not auto-load: ' + err.message +
+      '\n(This only works when served over http(s), e.g. GitHub Pages ' +
+      'or a local server — not when opened directly as a file. Use ' +
+      '"Load a local file instead" below.)';
+  });
+
+document.getElementById('jsonInput').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    try {
+      const data = JSON.parse(ev.target.result);
+      loadMapData(data);
+    } catch(err) {
+      statusDiv.textContent = 'Failed to parse JSON: ' + err.message;
+    }
+  };
+  reader.readAsText(file);
+});
+
+// ===== click to inspect =====
+renderer.domElement.addEventListener('click', (event) => {
+  mouse.x = (event.clientX / innerWidth) * 2 - 1;
+  mouse.y = -(event.clientY / innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  const intersects = raycaster.intersectObjects(boxMeshes, true);
+  if(intersects.length > 0){
+    let obj = intersects[0].object;
+    while(obj && !obj.userData.class) obj = obj.parent;
+    if(obj && obj.userData){
+      const d = obj.userData;
+      infoDiv.textContent =
+        `class: ${d.class}\nname: ${d.name}\nsource: ${d.source}\n` +
+        `pos: [${d.pos.map(v=>v.toFixed(1)).join(', ')}]\n` +
+        `bbox_min: [${d.bbox_min.map(v=>v.toFixed(1)).join(', ')}]\n` +
+        `bbox_max: [${d.bbox_max.map(v=>v.toFixed(1)).join(', ')}]`;
+    }
+  }
+});
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+function animate(){
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
