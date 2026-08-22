@@ -93,8 +93,5 @@ only outputs collision-level geometry, not textured visuals.
 
 ## Credits
 
-Built through manual reverse engineering of the Blitz Games engine
-format used by Pac-Man World 3, with extraction bootstrapped via
-[QuickBMS](https://aluigi.altervista.org/quickbms.htm) and a
-community-maintained `blitz_games.bms` script (originally for FairlyOdd
-Parents / Taz Wanted).
+- Format reverse engineering & extraction tooling: built with Claude (Anthropic) AI assistance
+- Archive extraction: [QuickBMS](https://aluigi.altervista.org/quickbms.htm) + community `blitz_games.bms` script
