@@ -10,6 +10,9 @@
   #ui input[type=file] { color:#eee; width:100%; margin-top:4px; }
   #legend { margin-top:8px; font-size:12px; max-height:220px; overflow:auto; }
   .legend-item { display:flex; align-items:center; gap:6px; margin:2px 0; cursor:pointer; }
+  .legend-highlight { background:#3a5a8a !important; border-radius:4px; }
+  #info button { margin-top:6px; background:#333; color:#eee; border:1px solid #555; border-radius:4px; padding:4px 8px; cursor:pointer; font-size:12px; }
+  #info button:hover { background:#444; }
   .swatch { width:12px; height:12px; flex:0 0 auto; border:1px solid #555; }
   #info { position:absolute; bottom:10px; left:10px; z-index:10; color:#eee; background:rgba(0,0,0,0.65); padding:8px 12px; border-radius:8px; font-size:12px; max-width:400px; white-space:pre-wrap; }
   #status { font-size:12px; color:#8f8; margin-top:6px; white-space:pre-wrap; }
@@ -33,6 +36,8 @@
   <div class="row">
     <label style="margin:0;"><input type="checkbox" id="toggleBoxes" checked> Show entity/trigger boxes</label>
   </div>
+  <label>Filter effects/objects:</label>
+  <input type="text" id="legendFilter" placeholder="type to filter, e.g. trigger" style="width:100%; box-sizing:border-box;">
   <div id="legend"></div>
 
   <details style="margin-top:12px;">
@@ -43,7 +48,7 @@
 </div>
 <div id="info">Left-drag = rotate&nbsp;&nbsp;Right-drag = pan&nbsp;&nbsp;Scroll = zoom&nbsp;&nbsp;Click a box for details</div>
 <div style="position:absolute; bottom:10px; right:10px; z-index:10; font-size:12px;">
-  <a href="https://github.com/asd9176506911298/Pac-Man-World-3-Level-Viewer" target="_blank" rel="noopener" style="color:#8cf;">View source on GitHub</a>
+  <a href="https://github.com/YOUR-USERNAME/YOUR-REPO-NAME" target="_blank" rel="noopener" style="color:#8cf;">View source on GitHub</a>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
@@ -61,7 +66,7 @@ document.body.appendChild(renderer.domElement);
 const controls = new THREE.OrbitControls(camera, renderer.domElement);
 controls.target.set(0,0,0);
 
-scene.add(new THREE.GridHelper(20000, 40, 0x444444, 0x2a2a2a));
+// (ground grid intentionally omitted)
 scene.add(new THREE.AxesHelper(500));
 scene.add(new THREE.AmbientLight(0xffffff, 0.65));
 const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
@@ -88,9 +93,12 @@ function buildMeshes(meshes){
   meshes.forEach(m => {
     const geo = new THREE.BufferGeometry();
     const verts = new Float32Array(m.verts.length*3);
-    m.verts.forEach((v,i) => { verts[i*3]=v[0]; verts[i*3+1]=v[1]; verts[i*3+2]=v[2]; });
+    m.verts.forEach((v,i) => { verts[i*3]=v[0]; verts[i*3+1]=v[1]; verts[i*3+2]=-v[2]; });
     const idx = new Uint32Array(m.faces.length*3);
-    m.faces.forEach((f,i) => { idx[i*3]=f[0]; idx[i*3+1]=f[1]; idx[i*3+2]=f[2]; });
+    // Left-handed source coordinate system -> right-handed (three.js):
+    // mirror the Z axis, and swap each triangle's 2nd/3rd vertex to
+    // keep correct face winding/normal direction.
+    m.faces.forEach((f,i) => { idx[i*3]=f[0]; idx[i*3+1]=f[2]; idx[i*3+2]=f[1]; });
     geo.setAttribute('position', new THREE.BufferAttribute(verts,3));
     geo.setIndex(new THREE.BufferAttribute(idx,1));
     geo.computeVertexNormals();
@@ -124,6 +132,8 @@ function buildBoxes(boxes){
   colorIdx = 0;
   for(const k in classColors) delete classColors[k];
   const visibleClasses = new Set();
+  const leafCheckboxes = [];   // {cb, cls}
+  const headerEntries = [];    // {headerCb, childCbs}
 
   boxes.forEach(b => {
     const [minx,miny,minz] = b.bbox_min;
@@ -131,18 +141,30 @@ function buildBoxes(boxes){
     let sx=maxx-minx, sy=maxy-miny, sz=maxz-minz;
     if (sx<=0) sx=1; if (sy<=0) sy=1; if (sz<=0) sz=1;
     if (sx>50000 || sy>50000 || sz>50000) return;
-    const cx=(minx+maxx)/2, cy=(miny+maxy)/2, cz=(minz+maxz)/2;
+    // Mirror Z axis: local bbox min/max swap and negate
+    const cx=(minx+maxx)/2, cy=(miny+maxy)/2, cz=-(minz+maxz)/2;
 
     const geo = new THREE.BoxGeometry(sx, sy, sz);
     const edges = new THREE.EdgesGeometry(geo);
     const color = colorFor(b.class);
     const wire = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({color}));
 
+    // Invisible solid mesh used purely for raycasting: a thin LineSegments
+    // edge is very hard to click precisely, so we give each box a real
+    // (transparent) volume to click anywhere inside/on.
+    const hitMesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+      transparent: true, opacity: 0, depthWrite: false
+    }));
+
     const group = new THREE.Group();
     group.add(wire);
-    group.position.set(b.pos[0], b.pos[1], b.pos[2]);
-    group.quaternion.copy(quatToThree(b.quat));
+    group.add(hitMesh);
+    // Mirror Z axis in world position
+    group.position.set(b.pos[0], b.pos[1], -b.pos[2]);
+    // Mirrored rotation quaternion: a Z-axis reflection negates x,y (w,z unchanged)
+    group.quaternion.copy(new THREE.Quaternion(-b.quat[0], -b.quat[1], b.quat[2], b.quat[3]));
     wire.position.set(cx, cy, cz);
+    hitMesh.position.set(cx, cy, cz);
     group.userData = b;
     boxGroup.add(group);
     boxMeshes.push(group);
@@ -150,24 +172,208 @@ function buildBoxes(boxes){
   });
 
   legendDiv.innerHTML = '';
+  const toolbar = document.createElement('div');
+  toolbar.style.cssText = 'display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap;';
+  const btnAll = document.createElement('button');
+  btnAll.textContent = 'Show all';
+  btnAll.onclick = () => {
+    headerEntries.forEach(({headerCb}) => headerCb.checked = true);
+    leafCheckboxes.forEach(({cb, cls}) => {
+      cb.checked = true;
+      boxMeshes.forEach(m => { if(m.userData.class===cls) m.visible = true; });
+    });
+  };
+  const btnNone = document.createElement('button');
+  btnNone.textContent = 'Hide all';
+  btnNone.onclick = () => {
+    headerEntries.forEach(({headerCb}) => headerCb.checked = false);
+    leafCheckboxes.forEach(({cb}) => cb.checked = false);
+    boxMeshes.forEach(m => m.visible = false);
+  };
+  const btnExpand = document.createElement('button');
+  btnExpand.textContent = 'Expand all groups';
+  btnExpand.onclick = () => {
+    legendDiv.querySelectorAll('[data-group="children"]').forEach(el => el.style.display = '');
+    legendDiv.querySelectorAll('[data-group="header"] span').forEach(el => { if(el.textContent==='\u25b8') el.textContent='\u25be'; });
+  };
+  const btnCollapse = document.createElement('button');
+  btnCollapse.textContent = 'Collapse all groups';
+  btnCollapse.onclick = () => {
+    legendDiv.querySelectorAll('[data-group="children"]').forEach(el => el.style.display = 'none');
+    legendDiv.querySelectorAll('[data-group="header"] span').forEach(el => { if(el.textContent==='\u25be') el.textContent='\u25b8'; });
+  };
+  const btnToggle = document.createElement('button');
+  btnToggle.textContent = 'Toggle all';
+  btnToggle.onclick = () => {
+    // Flip every header's master switch, and every leaf checkbox's own
+    // switch. Visibility is recomputed per leaf as (header AND own).
+    headerEntries.forEach(({headerCb}) => { headerCb.checked = !headerCb.checked; });
+    leafCheckboxes.forEach(({cb, cls, headerCb}) => {
+      cb.checked = !cb.checked;
+      const visible = (headerCb ? headerCb.checked : true) && cb.checked;
+      boxMeshes.forEach(m => { if(m.userData.class===cls) m.visible = visible; });
+    });
+  };
+  const btnToggleGroups = document.createElement('button');
+  btnToggleGroups.textContent = 'Toggle groups only';
+  btnToggleGroups.onclick = () => {
+    // Flips only each group's master switch (header). Child checkboxes
+    // keep their own checked state untouched; visibility is recomputed
+    // as (header AND child) for every member.
+    headerEntries.forEach(({headerCb, childCbs}) => {
+      headerCb.checked = !headerCb.checked;
+      childCbs.forEach(cb => cb.onchange());
+    });
+  };
+  const btnToggleRoot = document.createElement('button');
+  btnToggleRoot.textContent = 'Toggle root only';
+  btnToggleRoot.onclick = () => {
+    // Flips only standalone (ungrouped) items; anything inside a group
+    // is left completely untouched.
+    leafCheckboxes.forEach(({cb, cls, headerCb}) => {
+      if (headerCb) return; // skip items that belong to a group
+      cb.checked = !cb.checked;
+      boxMeshes.forEach(m => { if(m.userData.class===cls) m.visible = cb.checked; });
+    });
+  };
+  toolbar.appendChild(btnAll); toolbar.appendChild(btnNone);
+  toolbar.appendChild(btnExpand); toolbar.appendChild(btnCollapse);
+  toolbar.appendChild(btnToggle); toolbar.appendChild(btnToggleGroups); toolbar.appendChild(btnToggleRoot);
+  legendDiv.appendChild(toolbar);
+
+  // Group by stripping trailing digits, e.g. portal01/portal02 -> portal
+  const groupOf = cls => cls.replace(/\d+$/, '');
+  const groups = {};
   [...visibleClasses].sort().forEach(cls => {
-    const div = document.createElement('div');
-    div.className = 'legend-item';
-    const sw = document.createElement('div');
-    sw.className = 'swatch';
-    sw.style.background = '#' + classColors[cls].toString(16).padStart(6,'0');
-    const label = document.createElement('span');
-    label.textContent = `${cls} (${boxes.filter(x=>x.class===cls).length})`;
-    div.appendChild(sw); div.appendChild(label);
-    div.onclick = () => { boxMeshes.forEach(m => { if(m.userData.class===cls) m.visible = !m.visible; }); };
-    legendDiv.appendChild(div);
+    const g = groupOf(cls);
+    groups[g] = groups[g] || [];
+    groups[g].push(cls);
+  });
+
+  Object.keys(groups).sort().forEach(gname => {
+    const members = groups[gname];
+    const container = document.createElement('div');
+
+    if (members.length > 1) {
+      // Group header row, with its own show/hide checkbox and a
+      // collapse/expand arrow for the child list.
+      const headerDiv = document.createElement('div');
+      headerDiv.className = 'legend-item';
+      headerDiv.style.fontWeight = 'bold';
+      const headerCb = document.createElement('input');
+      headerCb.type = 'checkbox';
+      headerCb.checked = true;
+      headerCb.style.margin = '0';
+      const arrow = document.createElement('span');
+      arrow.textContent = '\u25be'; // expanded by default
+      arrow.style.cssText = 'width:10px; display:inline-block; cursor:pointer;';
+      const totalCount = members.reduce((s,c)=>s+boxes.filter(x=>x.class===c).length, 0);
+      const headerLabel = document.createElement('span');
+      headerLabel.textContent = `${gname}* (${members.length} types / ${totalCount})`;
+      headerDiv.appendChild(headerCb); headerDiv.appendChild(arrow); headerDiv.appendChild(headerLabel);
+      headerDiv.dataset.cls = gname.toLowerCase();
+      headerDiv.dataset.group = 'header';
+      container.appendChild(headerDiv);
+
+      const childWrap = document.createElement('div');
+      childWrap.style.paddingLeft = '18px';
+      childWrap.dataset.group = 'children';
+
+      arrow.onclick = (e) => {
+        e.stopPropagation();
+        const collapsed = childWrap.style.display === 'none';
+        childWrap.style.display = collapsed ? '' : 'none';
+        arrow.textContent = collapsed ? '\u25be' : '\u25b8';
+      };
+
+      const childCbs = [];
+      members.forEach(cls => {
+        const div = document.createElement('div');
+        div.className = 'legend-item';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = true;
+        cb.style.margin = '0';
+        const sw = document.createElement('div');
+        sw.className = 'swatch';
+        sw.style.background = '#' + classColors[cls].toString(16).padStart(6,'0');
+        const label = document.createElement('span');
+        label.textContent = `${cls} (${boxes.filter(x=>x.class===cls).length})`;
+        label.style.flex = '1';
+        const focusBtn = document.createElement('button');
+        focusBtn.textContent = '\u2316';
+        focusBtn.title = 'Focus camera on this';
+        focusBtn.style.cssText = 'padding:0 5px; font-size:11px; line-height:1.4; margin-left:auto;';
+        focusBtn.onclick = (e) => { e.stopPropagation(); focusCameraOnClass(cls); };
+        div.appendChild(cb); div.appendChild(sw); div.appendChild(label); div.appendChild(focusBtn);
+        // Actual visibility = header master switch AND this item's own switch.
+        // Toggling this checkbox never changes the header's checked state.
+        cb.onchange = () => {
+          boxMeshes.forEach(m => { if(m.userData.class===cls) m.visible = headerCb.checked && cb.checked; });
+        };
+        div.onclick = (e) => { if(e.target !== cb){ cb.checked = !cb.checked; cb.onchange(); } };
+        div.dataset.cls = cls.toLowerCase();
+        childWrap.appendChild(div);
+        childCbs.push(cb);
+        leafCheckboxes.push({cb, cls, headerCb});
+      });
+
+      headerEntries.push({headerCb, childCbs});
+
+      // Header only flips its own switch and recomputes each child's
+      // resulting visibility — it never changes the children's checked
+      // state, so unchecking a child stays remembered after the header
+      // is toggled back on.
+      headerCb.onchange = () => {
+        childCbs.forEach(cb => cb.onchange());
+      };
+      headerDiv.onclick = (e) => { if(e.target !== headerCb){ headerCb.checked = !headerCb.checked; headerCb.onchange(); } };
+
+      container.appendChild(childWrap);
+    } else {
+      const cls = members[0];
+      const div = document.createElement('div');
+      div.className = 'legend-item';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = true;
+      cb.style.margin = '0';
+      const sw = document.createElement('div');
+      sw.className = 'swatch';
+      sw.style.background = '#' + classColors[cls].toString(16).padStart(6,'0');
+      const label = document.createElement('span');
+      label.textContent = `${cls} (${boxes.filter(x=>x.class===cls).length})`;
+      label.style.flex = '1';
+      const focusBtn = document.createElement('button');
+      focusBtn.textContent = '\u2316';
+      focusBtn.title = 'Focus camera on this';
+      focusBtn.style.cssText = 'padding:0 5px; font-size:11px; line-height:1.4; margin-left:auto;';
+      focusBtn.onclick = (e) => { e.stopPropagation(); focusCameraOnClass(cls); };
+      div.appendChild(cb); div.appendChild(sw); div.appendChild(label); div.appendChild(focusBtn);
+      cb.onchange = () => { boxMeshes.forEach(m => { if(m.userData.class===cls) m.visible = cb.checked; }); };
+      div.onclick = (e) => { if(e.target !== cb){ cb.checked = !cb.checked; cb.onchange(); } };
+      div.dataset.cls = cls.toLowerCase();
+      leafCheckboxes.push({cb, cls, headerCb: null});
+      container.appendChild(div);
+    }
+
+    legendDiv.appendChild(container);
   });
 }
 
 document.getElementById('toggleBoxes').addEventListener('change', e => { boxGroup.visible = e.target.checked; });
 
+document.getElementById('legendFilter').addEventListener('input', e => {
+  const q = e.target.value.toLowerCase();
+  legendDiv.querySelectorAll('.legend-item').forEach(div => {
+    if(!div.dataset.cls) return; // skip toolbar row
+    div.style.display = div.dataset.cls.includes(q) ? '' : 'none';
+  });
+});
+
 // ===== load json =====
 function loadMapData(data){
+  document.getElementById('legendFilter').value = '';
   const {totalV, totalF} = buildMeshes(data.meshes || []);
   buildBoxes(data.boxes || []);
   statusDiv.textContent = `Map: ${data.map}\nCollision mesh: ${(data.meshes||[]).length} sub-meshes (${totalV} verts / ${totalF} faces)\nEntity/trigger boxes: ${(data.boxes||[]).length}`;
@@ -226,6 +432,68 @@ document.getElementById('jsonInput').addEventListener('change', (e) => {
   reader.readAsText(file);
 });
 
+// ===== smooth camera focus =====
+function animateCameraTo(center, size){
+  const maxDim = Math.max(size.x, size.y, size.z, 1);
+  const distance = maxDim * 2.5;
+
+  const startPos = camera.position.clone();
+  const startTarget = controls.target.clone();
+  const dir = new THREE.Vector3(1, 0.6, 1).normalize();
+  const endPos = center.clone().add(dir.multiplyScalar(distance));
+  const endTarget = center.clone();
+
+  const duration = 700;
+  const t0 = performance.now();
+  function step(now){
+    let t = Math.min((now - t0) / duration, 1);
+    t = t*t*(3-2*t); // smoothstep easing
+    camera.position.lerpVectors(startPos, endPos, t);
+    controls.target.lerpVectors(startTarget, endTarget, t);
+    controls.update();
+    if (t < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+function focusCameraOn(group){
+  const box = new THREE.Box3().setFromObject(group);
+  animateCameraTo(box.getCenter(new THREE.Vector3()), box.getSize(new THREE.Vector3()));
+}
+
+// Focus the camera to frame every box instance sharing a given class
+// (there can be more than one, e.g. "portal01 (2)").
+function focusCameraOnClass(cls){
+  const matches = boxMeshes.filter(m => m.userData.class === cls && m.visible);
+  if (matches.length === 0) return;
+  const box = new THREE.Box3();
+  matches.forEach(m => box.expandByObject(m));
+  animateCameraTo(box.getCenter(new THREE.Vector3()), box.getSize(new THREE.Vector3()));
+}
+
+// ===== find & reveal the matching legend row =====
+function revealLegendRow(cls){
+  const lower = cls.toLowerCase();
+  let row = legendDiv.querySelector(`.legend-item[data-cls="${CSS.escape(lower)}"]:not([data-group="header"])`);
+  if (!row) row = legendDiv.querySelector(`.legend-item[data-cls="${CSS.escape(lower)}"]`);
+  if (!row) return;
+
+  // auto-expand the parent group if it's currently collapsed
+  const childWrap = row.closest('[data-group="children"]');
+  if (childWrap && childWrap.style.display === 'none') {
+    childWrap.style.display = '';
+    const headerDiv = childWrap.previousElementSibling;
+    if (headerDiv) {
+      const arrow = headerDiv.querySelectorAll('span')[0];
+      if (arrow) arrow.textContent = '\u25be';
+    }
+  }
+
+  row.scrollIntoView({behavior:'smooth', block:'center'});
+  row.classList.add('legend-highlight');
+  setTimeout(() => row.classList.remove('legend-highlight'), 1500);
+}
+
 // ===== click to inspect =====
 renderer.domElement.addEventListener('click', (event) => {
   mouse.x = (event.clientX / innerWidth) * 2 - 1;
@@ -237,11 +505,22 @@ renderer.domElement.addEventListener('click', (event) => {
     while(obj && !obj.userData.class) obj = obj.parent;
     if(obj && obj.userData){
       const d = obj.userData;
-      infoDiv.textContent =
+      infoDiv.innerHTML = '';
+      const pre = document.createElement('div');
+      pre.style.whiteSpace = 'pre-wrap';
+      pre.textContent =
         `class: ${d.class}\nname: ${d.name}\nsource: ${d.source}\n` +
         `pos: [${d.pos.map(v=>v.toFixed(1)).join(', ')}]\n` +
         `bbox_min: [${d.bbox_min.map(v=>v.toFixed(1)).join(', ')}]\n` +
         `bbox_max: [${d.bbox_max.map(v=>v.toFixed(1)).join(', ')}]`;
+      infoDiv.appendChild(pre);
+
+      const focusBtn = document.createElement('button');
+      focusBtn.textContent = 'Focus camera on this';
+      focusBtn.onclick = () => focusCameraOn(obj);
+      infoDiv.appendChild(focusBtn);
+
+      revealLegendRow(d.class);
     }
   }
 });
