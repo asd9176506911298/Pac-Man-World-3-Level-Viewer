@@ -48,7 +48,7 @@
 </div>
 <div id="info">Left-drag = rotate&nbsp;&nbsp;Right-drag = pan&nbsp;&nbsp;Scroll = zoom&nbsp;&nbsp;Click a box for details</div>
 <div style="position:absolute; bottom:10px; right:10px; z-index:10; font-size:12px;">
-  <a href="https://github.com/YOUR-USERNAME/YOUR-REPO-NAME" target="_blank" rel="noopener" style="color:#8cf;">View source on GitHub</a>
+  <a href="https://github.com/asd9176506911298/Pac-Man-World-3-Level-Viewer" target="_blank" rel="noopener" style="color:#8cf;">View source on GitHub</a>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
@@ -173,7 +173,7 @@ function buildBoxes(boxes){
 
   legendDiv.innerHTML = '';
   const toolbar = document.createElement('div');
-  toolbar.style.cssText = 'display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap;';
+  toolbar.style.cssText = 'display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap; position:sticky; top:0; z-index:5; background:#181818; padding:4px 0 6px 0;';
   const btnAll = document.createElement('button');
   btnAll.textContent = 'Show all';
   btnAll.onclick = () => {
@@ -499,7 +499,11 @@ renderer.domElement.addEventListener('click', (event) => {
   mouse.x = (event.clientX / innerWidth) * 2 - 1;
   mouse.y = -(event.clientY / innerHeight) * 2 + 1;
   raycaster.setFromCamera(mouse, camera);
-  const intersects = raycaster.intersectObjects(boxMeshes, true);
+  // Older three.js (r128) does not skip .visible === false objects during
+  // raycasting on its own, so hidden/unchecked boxes must be filtered out
+  // manually before testing, otherwise they're still clickable.
+  const visibleBoxMeshes = boxMeshes.filter(m => m.visible);
+  const intersects = raycaster.intersectObjects(visibleBoxMeshes, true);
   if(intersects.length > 0){
     let obj = intersects[0].object;
     while(obj && !obj.userData.class) obj = obj.parent;
